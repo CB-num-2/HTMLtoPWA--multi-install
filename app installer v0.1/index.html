@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HTML-to-PWA Local Builder</title>
+  <style>
+    body { font-family: sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+    label { display: block; margin-top: 1rem; font-weight: bold; }
+    input, button { width: 100%; padding: 10px; margin-top: 4px; box-sizing: border-box; font-size: 16px; }
+    button { margin-top: 1.5rem; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; }
+    button:disabled { background: #94a3b8; cursor: not-allowed; }
+    #status { margin-top: 1rem; padding: 10px; background: #f1f5f9; border-radius: 6px; }
+  </style>
+</head>
+<body>
+
+  <h1>Local HTML to PWA Installer</h1>
+
+  <!-- Step 1: Upload HTML -->
+  <label>1. Upload HTML File (.html)</label>
+  <input type="file" id="htmlFile" accept=".html,text/html" required>
+
+  <!-- Step 2: Configure PWA Data -->
+  <label>2. Custom URL ID (e.g., calculator, game1)</label>
+  <input type="text" id="customId" placeholder="my-custom-app" required>
+
+  <label>PWA Full Name</label>
+  <input type="text" id="appName" placeholder="My Custom PWA" required>
+
+  <label>PWA Short Name</label>
+  <input type="text" id="shortName" placeholder="CustomPWA" required>
+
+  <label>Theme Color</label>
+  <input type="color" id="themeColor" value="#2563eb">
+
+  <!-- Step 3: Build & Install -->
+  <button id="prepareBtn">Step A: Save Locally & Prepare PWA</button>
+  <button id="installBtn" disabled>Step B: Install PWA Now</button>
+
+  <div id="status">Waiting for Service Worker...</div>
+  <iframe id="loaderFrame" style="display:none;"></iframe>
+
+  <script>
+    const CACHE_NAME = 'local-pwa-builder-v1';
+    const statusEl = document.getElementById('status');
+    const prepareBtn = document.getElementById('prepareBtn');
+    const installBtn = document.getElementById('installBtn');
+    const loaderFrame = document.getElementById('loaderFrame');
+    let deferredPrompt = null;
+
+    // Register root Service Worker immediately
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./app installer v0.1/sw.js', { scope: './app installer v0.1/' }).then(() => {
+        statusEl.textContent = 'Service Worker active! Upload an HTML file and enter details.';
+      });
+    }
+
+    // Step 3a: Store HTML and Manifest into local Cache API under the custom ID path
+    prepareBtn.addEventListener('click', async () => {
+      const fileInput = document.getElementById('htmlFile');
+      const rawId = document.getElementById('customId').value.trim().toLowerCase().replace(/[^a-z0-9-_]/g, '');
+      const appName = document.getElementById('appName').value.trim() || rawId;
+      const shortName = document.getElementById('shortName').value.trim() || appName;
+      const themeColor = document.getElementById('themeColor').value;
+
+      if (!fileInput.files[0] || !rawId) {
+        alert('Please select an HTML file and enter a Custom URL ID.');
+        return;
+      }
+
+      let htmlText = await fileInput.files[0].text();
+
+      // Calculate the exact virtual base path branching from your current URL
+      const basePath = window.location.pathname.replace(/\/[^/]*$/, '/');
+      const appScope = `${basePath}apps/${rawId}/`;
+      const manifestUrl = `${appScope}manifest.json`;
+
+      // Inject the manifest link into the uploaded HTML automatically
+      const manifestTag = `<link rel="manifest" href="${manifestUrl}">`;
+      if (htmlText.includes('</head>')) {
+        htmlText = htmlText.replace('</head>', `${manifestTag}\n</head>`);
+      } else {
+        htmlText = manifestTag + '\n' + htmlText;
+      }
+
+      // Build the custom Web App Manifest
+      const manifestData = {
+        name: appName,
+        short_name: shortName,
+        id: appScope,
+        start_url: appScope,
+        scope: appScope,
+        display: 'standalone',
+        background_color: '#ffffff',
+        theme_color: themeColor,
+        icons: [
+          {
+            src: `data:image/svg+xml;utf8,<svg xmlns='http://w3.org' viewBox='0 0 192 192'><rect width='192' height='192' fill='${encodeURIComponent(themeColor)}'/><text x='50%' y='54%' font-size='80' font-family='sans-serif' font-weight='bold' fill='white' text-anchor='middle' dominant-baseline='middle'>${encodeURIComponent(shortName.slice(0, 2).toUpperCase())}</text></svg>`,
+            sizes: '192x192',
+            type: 'image/svg+xml'
+          }
+        ]
+      };
+
+      // Save both files to the local browser cache
+      const cache = await caches.open(CACHE_NAME);
+      const fullOrigin = window.location.origin;
+
+      await cache.put(
+        `${fullOrigin}${appScope}index.html`,
+        new Response(htmlText, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })
+      );
+
+      await cache.put(
+        `${fullOrigin}${manifestUrl}`,
+        new Response(JSON.stringify(manifestData), { headers: { 'Content-Type': 'application/manifest+json' } })
+      );
+
+      statusEl.textContent = `Saved locally at ${appScope} — waiting for Chrome install trigger...`;
+      installBtn.disabled = true;
+      deferredPrompt = null;
+
+      // Step 3b: Load the virtual URL in the hidden iframe to fire beforeinstallprompt
+      loaderFrame.src = appScope;
+      loaderFrame.onload = () => {
+        loaderFrame.contentWindow.addEventListener('beforeinstallprompt', (e) => {
+          e.preventDefault();
+          deferredPrompt = e;
+          installBtn.disabled = false;
+          statusEl.textContent = `Ready! Click "Step B: Install PWA Now" to install ${appName}.`;
+        });
+      };
+    });
+
+    // Trigger the native browser installation dialog
+    installBtn.addEventListener('click', async () => {
+      if (!deferredPrompt) return;
+      deferredPrompt.prompt();
+      const choice = await deferredPrompt.userChoice;
+      if (choice.outcome === 'accepted') {
+        statusEl.textContent = 'Installed! You can now launch it from your desktop/apps menu offline.';
+      }
+      deferredPrompt = null;
+      installBtn.disabled = true;
+    });
+  </script>
+</body>
+</html>
